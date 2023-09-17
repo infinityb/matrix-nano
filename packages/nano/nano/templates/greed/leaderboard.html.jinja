@@ -1,0 +1,20 @@
+<table>
+  <thead>
+    <tr>
+      <th>Player</th>
+      <th>Score</th>
+      <th>Games won</th>
+      <th>Games played</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for item in leaderboard.items %}
+        <tr>
+          <td>{{ item.rolling_user }}</td>
+          <td>{{ item.score_sum }}</td>
+          <td>{{ item.win_count }}</td>
+          <td>{{ item.game_count }}</td>
+        </tr>
+    {% endfor %}
+  </tbody>
+</table>

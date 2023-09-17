@@ -1,0 +1,11 @@
+[build-system]
+requires = ["poetry_core>=1.0.0"]
+build-backend = "poetry.core.masonry.api"
+
+[tool.poetry]
+name = "nano"
+version = "1.0.0"
+description = "a matrix bot."
+authors = ["Stacey Ell <software@e.staceyell.com>"]
+license = "Proprietary"
+readme = "README.md"

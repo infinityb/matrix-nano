@@ -1,0 +1,2 @@
+{% for item in leaderboard.items %}
+{{ item.rolling_user }} -- won {{ item.win_count }} out of {{ item.game_count }} games for a total score of {{ item.score_sum }}{% endfor %}
