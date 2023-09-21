@@ -12,7 +12,8 @@ from collections import namedtuple
 from contextlib import asynccontextmanager
 import jinja2
 from jinja2 import Environment, select_autoescape
-
+import traceback
+import sys
 
 from nio import (
     AsyncClient,
@@ -332,7 +333,6 @@ LLAMA_ARG_PARSER = generate_arg_parser_llama()
 async def handle_command_llama(client, room: MatrixRoom, event: RoomMessageText, args):
     try:
         with open(f'{event.event_id}.bot-meta', 'r') as fh:
-            print("x")
             return
     except FileNotFoundError:
         pass
@@ -429,15 +429,11 @@ async def handle_command_greed(client, room: MatrixRoom, event: RoomMessageText,
         target_user_id = args.user_id
 
     if args.subparser_name == 'stats':
-        greed_sum = None
-        async with call_command(client, room.room_id, event.event_id):
-            greed_sum = engine.sum_score(target_channel.room_id, target_user_id)
+        greed_sum = engine.sum_score(target_channel.room_id, target_user_id)
         if greed_sum:
             return await client.room_send_unver(room.room_id, "m.room.message", greed_sum.to_matrix_message())
     elif args.subparser_name == 'leaderboard':
-        greederboard = None
-        async with call_command(client, room.room_id, event.event_id):
-            greederboard = engine.score_leaderboard(target_channel.room_id, args.limit)
+        greederboard = engine.score_leaderboard(target_channel.room_id, args.limit)
         if greederboard:
             message = greederboard.to_matrix_message(target_channel)
             if args.plain_text:
@@ -445,21 +441,13 @@ async def handle_command_greed(client, room: MatrixRoom, event: RoomMessageText,
                 message.pop("formatted_body")
             return await client.room_send_unver(room.room_id, "m.room.message", message)
     elif args.subparser_name is None:
-        play_result = None
-        async with call_command(client, room.room_id, event.event_id, announce_success=True):
-            play_result = engine.play_apply(event.event_id, target_channel.room_id, event.sender)
+        play_result = engine.play_apply(event.event_id, target_channel.room_id, event.sender)            
         if play_result is None:
             return
 
-        # foreign_score_parts = greed_roll_score(play_result['foreign_roll'])
-        # local_score_parts = greed_roll_score(play_result['local_roll'])
         f_status = greed_format_roll_and_score(play_result['foreign_roll'])
         l_status = greed_format_roll_and_score(play_result['local_roll'])
 
-        # foreign_score_abs = sum(x for (x, _) in greed_roll_score(play_result['local_roll']))
-        # local_score_abs = sum(x for (x, _) in greed_roll_score(roll))
-        # greed_format_roll_and_score()
-        # aibi (-300): [1, 1, 2, 2, 2, 6] => [[1 => 100], [1 => 100], [2, 2, 2 => 200]] for 400 points
         prev_player = room.user_name(play_result['foreign_rolling_user_id'])
         cur_player = room.user_name(event.sender)
         return await client.room_send_unver(room.room_id, "m.room.message", {
@@ -568,6 +556,22 @@ async def call_command(client, room_id, event_id, announce_success=False):
             }
         })
         return
+    except:
+        await client.room_send_unver(room_id, "m.reaction", {
+            "m.relates_to": {
+                "rel_type": "m.annotation",
+                "event_id": event_id,
+                "key": "⚠️",
+            }
+        })
+        await client.room_send_unver(room_id, "m.reaction", {
+            "m.relates_to": {
+                "rel_type": "m.annotation",
+                "event_id": event_id,
+                "key": "❌",
+            }
+        })
+        raise
     if announce_success:
         await client.room_send_unver(room_id, "m.reaction", {
             "m.relates_to": {
@@ -737,31 +741,33 @@ async def transcribe_audio_file(room: MatrixRoom, event: RoomEncryptedAudio, res
         })
     else:
         decrypted_content = resp.body
-    with open(f"{event.event_id}.ogg", "wb") as f:
-        f.write(decrypted_content)
-    
-    yield EVENT_STARTED
-    proc = await asyncio.create_subprocess_exec(
-        'ffmpeg',
-        '-i', f"{event.event_id}.ogg",
-        "-ar", "16k",
-        f"{event.event_id}.wav",
-        stdin=asyncio.subprocess.DEVNULL)
-    await proc.wait()
+    with tempfile.TemporaryDirectory(dir='.') as tdir:
+        ogg_file = os.path.join(tdir, f"tmp.ogg")
+        wav_file = os.path.join(tdir, f"tmp.wav")
+        out_file = os.path.join(tdir, f"tmp.output")
+        with open(ogg_file, "wb") as f:
+            f.write(decrypted_content)
 
-    with open(f"{event.event_id}.output", "w") as ofh:
-
+        yield EVENT_STARTED
         proc = await asyncio.create_subprocess_exec(
-            'whisper-cpp',
-            '--model', f'/mnt/ceph-transmission/models/whisper.cpp/ggml-medium.bin',
-            '--language', 'auto',
-            f"{event.event_id}.wav",
-            stdin=asyncio.subprocess.DEVNULL,
-            stdout=ofh)
+            'ffmpeg',
+            '-i', ogg_file,
+            "-ar", "16k",
+            wav_file,
+            stdin=asyncio.subprocess.DEVNULL)
         await proc.wait()
-    with open(f"{event.event_id}.output", "r") as ofh:
-        buf = ofh.read()
-    yield EventCompleted(buf)
+        with open(out_file, "w") as ofh:
+            proc = await asyncio.create_subprocess_exec(
+                'whisper-cpp',
+                '--model', f'/mnt/ceph-transmission/models/whisper.cpp/ggml-medium.bin',
+                '--language', 'auto',
+                wav_file,
+                stdin=asyncio.subprocess.DEVNULL,
+                stdout=ofh)
+            await proc.wait()
+        with open(out_file, "r") as ofh:
+            buf = ofh.read()
+        yield EventCompleted(buf)
 
 
 class CustomEncryptedClient(AsyncClient):
@@ -907,7 +913,7 @@ class CustomEncryptedClient(AsyncClient):
         print(f"\ncb_key_verify_event\n{ver=!r}")
     async def cb_key_verify_key(self, ver: KeyVerificationKey):
         print(f"\ncb_key_verify_key\n{ver=!r}")
-        mysas = self.get_active_sas('@aibi:chat.yshi.org', 'ATGECGKLBN')
+        mysas = self.get_active_sas('@pem:chat.yshi.org', 'JLMFGELSAJ')
         # mysas.accept_sas()
         print(f"cb_key_verify_key {mysas.__dict__=!r}")
         # mysas.receive_key_event(ver)
@@ -980,6 +986,14 @@ class CustomEncryptedClient(AsyncClient):
             cmd_lexed = shlex.split(event.body)
         except ValueError:
             pass
+        if cmd_lexed is None and event.body.startswith('!'):
+            await self.room_send_unver(room.room_id, "m.reaction", {
+                "m.relates_to": {
+                    "rel_type": "m.annotation",
+                    "event_id": event.event_id,
+                    "key": "⁉️",
+                }
+            })
         if event_thread_id is not None:
             handler_info = {}
             try:
@@ -1033,24 +1047,32 @@ class CustomEncryptedClient(AsyncClient):
                 "msgtype": "m.message",
                 "body": room.room_id,
             }, parent_event=event)
-
+        if cmd_lexed and cmd_lexed[0] == '!dump-device-store':
+            print("device-store:")
+            device_store: crypto.DeviceStore = self.device_store
+            for device in device_store:
+                print(f"\t{device.user_id}\t {device.device_id}\t {device.trust_state}\t  {device.display_name}")
         if cmd_lexed:
-            command_handle = commands.get(cmd_lexed[0], None)
-            if command_handle:
-                requires_unthreaded = command_handle.get('requires_unthreaded', None)
-                if requires_unthreaded is not None:
-                    if requires_unthreaded == event_thread_id is not None:
-                        command_handle = None
-            if command_handle:
-                try:
-                    args = command_handle['parser'].parse_args(cmd_lexed[1:])
-                except MatrixArgumentParserArgumentError as e:
-                    return await self.room_send_unver(room.room_id, "m.room.message", {
-                        "msgtype": "m.message",
-                        "body": str(e),
-                    }, parent_event=event)
-                handler = command_handle['handler']
-                return await handler(self, room, event, args)
+            try:
+                async with call_command(self, room.room_id, event.event_id):
+                    command_handle = commands.get(cmd_lexed[0], None)
+                    if command_handle:
+                        requires_unthreaded = command_handle.get('requires_unthreaded', None)
+                        if requires_unthreaded is not None:
+                            if requires_unthreaded == event_thread_id is not None:
+                                command_handle = None
+                    if command_handle:
+                        try:
+                            args = command_handle['parser'].parse_args(cmd_lexed[1:])
+                        except MatrixArgumentParserArgumentError as e:
+                            return await self.room_send_unver(room.room_id, "m.room.message", {
+                                "msgtype": "m.message",
+                                "body": str(e),
+                            }, parent_event=event)
+                        handler = command_handle['handler']
+                        return await handler(self, room, event, args)
+            except (RuntimeError, KeyError):
+                print(traceback.format_exc())
 
 
     async def cb_audio_file(self, room: MatrixRoom, event: RoomEncryptedAudio):
@@ -1171,7 +1193,7 @@ async def run_client(client: CustomEncryptedClient) -> None:
             print(f"{client.users_for_key_query=!r}")
             print(f"{client.room_devices(ROOM_ID)=!r}")
             room_device = client.room_devices('!XSskJMyVdwwckSNECF:m-test.yyc1.yshi.org')
-            ver = client.create_key_verification(room_device['@aibi:chat.yshi.org']['ATGECGKLBN'])
+            ver = client.create_key_verification(room_device['@pem:chat.yshi.org']['JLMFGELSAJ'])
             print(f"{ver=!r}")
             resp = await client.to_device(ver)
             print(f"{resp=!r}")
